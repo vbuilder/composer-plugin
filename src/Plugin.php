@@ -30,6 +30,7 @@ use Composer\EventDispatcher\EventSubscriberInterface;
 use Composer\Script\ScriptEvents;
 use Composer\Script\Event;
 use Composer\Util\Filesystem;
+use Composer\Util\ProcessExecutor;
 use Composer\Package\AliasPackage;
 use Composer\Package\BasePackage;
 use Composer\Package\RootPackage;
@@ -128,6 +129,7 @@ class Plugin implements PluginInterface, EventSubscriberInterface {
 	public function onPostAutoloadDump(Event $event) {
 
 		$fs = $this->fs;
+		$process = new ProcessExecutor($this->io);
 		$config = $this->composer->getConfig();
 
 		$basePath = $this->getBasePath();
@@ -161,8 +163,20 @@ return include __DIR__ . $autoloadPath;
 BOOTSTRAP_END
 ;
 
-					file_put_contents($autoloadFile = $bootstrapDirPath . '/' . basename($path), $content);
-					$this->io->write('Generating fake autoload in: ' . $fs->findShortestPath($basePath, $autoloadFile));
+					$autoloadFile = $bootstrapDirPath . '/' . basename($path);
+					$autoloadFileShort = $fs->findShortestPath($basePath, $autoloadFile);
+					$this->io->write('Generating fake autoload in: ' . $autoloadFileShort);
+					file_put_contents($autoloadFile, $content);
+					if(is_dir("$installPath/.git")) {
+						$exitCode = $process->execute(
+							'git --git-dir ' . escapeshellarg("$installPath/.git") .
+							' --work-tree ' . escapeshellarg($installPath) .
+							' update-index --assume-unchanged ' . escapeshellarg($autoloadFile)
+						);
+
+						if($exitCode)
+							throw new \RuntimeException('Failed to mark ' . $autoloadFileShort . ' as unchanged');
+					}
 				}
 			}
 		}

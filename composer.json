@@ -1,0 +1,13 @@
+{
+	"name": "vbuilder/composer-plugin",
+	"type": "composer-plugin",
+	"autoload": {
+		"psr-4": {"vBuilder\\Composer\\": "src/"}
+	},
+	"extra": {
+		"class": "vBuilder\\Composer\\Plugin"
+	},
+	"require": {
+		"composer-plugin-api": "1.0.0"
+	}
+}

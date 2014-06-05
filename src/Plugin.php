@@ -30,6 +30,7 @@ use Composer\EventDispatcher\EventSubscriberInterface;
 use Composer\Script\ScriptEvents;
 use Composer\Script\Event;
 use Composer\Util\Filesystem;
+use Composer\Package\AliasPackage;
 use Composer\Package\BasePackage;
 use Composer\Package\RootPackage;
 
@@ -83,16 +84,11 @@ class Plugin implements PluginInterface, EventSubscriberInterface {
 			$extra = $pkg->getExtra();
 			if(isset($extra['vbuilder'])) {
 
-				// No duplicates
-				$found = FALSE;
-				foreach($ourPackages as $pkg2) {
-					if($pkg2->getName() == $pkg->getName()) {
-						$found = TRUE;
-						break;
-					}
-				}
+				// Resolve aliases
+				while($pkg instanceof AliasPackage)
+					$pkg = $pkg->getAliasOf();
 
-				if(!$found)
+				if(!in_array($pkg, $ourPackages))
 					$ourPackages[] = $pkg;
 			}
 		}

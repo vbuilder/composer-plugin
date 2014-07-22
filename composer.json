@@ -1,5 +1,6 @@
 {
 	"name": "vbuilder/composer-plugin",
+	"description": "Composer plugin for installing vBuilder based projects and libraries",
 	"type": "composer-plugin",
 	"autoload": {
 		"psr-4": {"vBuilder\\Composer\\": "src/"}
@@ -8,7 +9,7 @@
 		"class": "vBuilder\\Composer\\Plugin",
 		"branch-alias": {
 			"dev-master": "0.2.x-dev"
-		},
+		}
 	},
 	"require": {
 		"composer-plugin-api": "1.0.0"

@@ -54,10 +54,18 @@ class Plugin implements PluginInterface, EventSubscriberInterface {
 	/** @var FileSystem */
 	private $fs;
 
+	/** @var ProcessExecutor */
+	private $process;
+
+	/** @var Config */
+	private $config;
+
 	public function activate(Composer $composer, IOInterface $io) {
 		$this->composer = $composer;
 		$this->io = $io;
 		$this->fs = new FileSystem;
+		$this->process = new ProcessExecutor($this->io);
+		$this->config = $this->composer->getConfig();
 	}
 
 	public static function getSubscribedEvents() {
@@ -98,11 +106,21 @@ class Plugin implements PluginInterface, EventSubscriberInterface {
 	/**
 	 * Returns absolute path to root package
 	 *
-	 * @param Package
 	 * @return string
 	 */
 	private function getBasePath() {
 		return $this->fs->normalizePath(realpath('.'));
+	}
+
+	/**
+	 * Returns absolute path to vendor directory
+	 *
+	 * @return string
+	 */
+	private function getVendorDirPath() {
+		return $this->fs->normalizePath(
+			realpath($this->config->get('vendor-dir'))
+		);
 	}
 
 	/**
@@ -124,58 +142,207 @@ class Plugin implements PluginInterface, EventSubscriberInterface {
 	 */
 	public function onPostAutoloadDump(Event $event) {
 
-		$fs = $this->fs;
-		$process = new ProcessExecutor($this->io);
-		$config = $this->composer->getConfig();
+		$config = $this->config;
 
 		$basePath = $this->getBasePath();
-		$vendorDirPath = $fs->normalizePath(realpath($config->get('vendor-dir')));
+		$vendorDirPath = $this->getVendorDirPath();
 
-		$infoPath = $vendorDirPath . '/composer/vbuilder_info.php';
-		$info = array(
+		// Bootstrap - Container parameters - will be passed to Configurator by
+		// Nette\Configurator::addParameters()
+		$bootstrapParameters = array(
 			'pkg' => array()
 		);
 
+		// Bootstrap - NEON config files - will be passed to Configurator by
+		// Nette\Configurator::addConfig()
+		$bootstrapConfigFiles = array();
+
+		// Bootstrap - Nette extensions - will be passed to Configurator like
+		// Nette\Configurator::onCompile[] = function ($configurator, $complier) {
+		//		$compiler->addExtension('name', new Class)
+		// }
+		$bootstrapNetteExtensions = array();
+
+		// ---------------------------------------------------------------------
+
 		foreach($this->getPackages() as $pkg) {
 
+			$extra = $pkg->getExtra();
 			$installPath = $this->getInstallPath($pkg);
-			$relativePath = $fs->findShortestPath($vendorDirPath, $installPath, TRUE);
-			$packageInfoPath = '//VENDOR_DIR/' . $relativePath;
 
+			// -----------------------------------------------------------------
+
+			// Prepare package name and path with placeholder
 			$tokens = explode('/', $pkg->getName());
 
+			// Prepare key in $bootstrapParameters['pkg']
 			if(count($tokens) == 2) {
-				if(!isset($info['pkg'][$tokens[0]]))
-					$info['pkg'][$tokens[0]] = array();
+				if(!isset($bootstrapParameters['pkg'][$tokens[0]]))
+					$bootstrapParameters['pkg'][$tokens[0]] = array();
 
-				$packageInfo = &$info['pkg'][$tokens[0]][$tokens[1]];
+				$bootstrapPkgInfo = &$bootstrapParameters['pkg'][$tokens[0]][$tokens[1]];
 			} else
-				$packageInfo = &$info['pkg'][$tokens[0]];
+				$bootstrapPkgInfo = &$bootstrapParameters['pkg'][$tokens[0]];
 
-			$packageInfo = array(
-				'dir' => $packageInfoPath,
-				'configFiles' => array(),
-				'robotLoaderDirs' => array()
+			// Write package info to boostrap as a parameter
+			$bootstrapPkgInfo = array(
+				'dir' => $installPath
 			);
 
+			// Do we have NEON config file?
 			$configFile = $installPath . '/config.neon';
-			if(file_exists($configFile)) $packageInfo['configFiles'][] = $packageInfoPath . '/config.neon';
+			if(file_exists($configFile))
+				$bootstrapConfigFiles[] = $configFile;
 
-			$robotsFile = $installPath . '/netterobots.txt';
-			if(file_exists($robotsFile)) $packageInfo['robotLoaderDirectories'][] = $packageInfoPath;
+			// Do we need any Nette extension?
+			if(isset($extra['vbuilder']['extensions'])) {
+				$extensions = (array) $extra['vbuilder']['extensions'];
+				foreach($extensions as $name => $className) {
+					$bootstrapNetteExtensions[$name] = $className;
+				}
+			}
 
-			// Check for fake autoloader-files
-			$extra = $pkg->getExtra();
+			// Generate fake autoloader files
 			if(isset($extra['vbuilder']['fake-autoloader-files'])) {
 				$files = (array) $extra['vbuilder']['fake-autoloader-files'];
-				foreach($files as $path) {
-					$bootstrapDirPath = $fs->normalizePath($installPath . '/' . dirname($path));
-					if(!is_dir($bootstrapDirPath)) continue;
+				foreach($files as $path)
+					$this->generateFakeAutoloadFile($pkg, $path);
+			}
+		}
 
-					$relativePath = $fs->findShortestPath($bootstrapDirPath, $vendorDirPath, TRUE);
-					$autoloadPath = var_export('/' . rtrim($relativePath, '/') . '/autoload.php', TRUE);
+		// ---------------------------------------------------------------------
 
-					$content = <<<BOOTSTRAP_END
+		ksort($bootstrapParameters['pkg']);
+
+		// Generate vBuilder bootstrap
+		$this->generateBootstrap(
+			$bootstrapParameters,
+			$bootstrapConfigFiles,
+			$bootstrapNetteExtensions
+		);
+	}
+
+
+	protected function translateBootstrapPath($str) {
+		return str_replace(
+			"'" . $this->getVendorDirPath() . '/',
+			"\$vendorDir . '/",
+			$str
+		);
+	}
+
+	protected function generateBootstrap(array $parameters, array $configFiles, array $extensions) {
+
+		// Path to generated bootstrap file
+		$path = $this->getVendorDirPath() . '/composer/vbuilder_bootstrap.php';
+		$displayPath = $this->fs->findShortestPath($this->getBasePath(), $path);
+
+		// Suffix
+		$suffix = $this->config->get('autoloader-suffix') ?: md5(uniqid('', true));
+
+		// Parameters (we need to substitute absolute paths for relative)
+		$exportedParameters = var_export($parameters, TRUE);
+		$exportedParameters = $this->translateBootstrapPath($exportedParameters);
+		$exportedParameters = str_replace("\n", "\n\t\t", $exportedParameters);
+
+		// Config files
+		if(count($configFiles)) {
+			$exportedConfigFiles = '';
+			foreach($configFiles as $file)
+				$exportedConfigFiles .= "\$configurator->addConfig(" . var_export($file, TRUE) . ");\n\t\t";
+
+			$exportedConfigFiles = $this->translateBootstrapPath($exportedConfigFiles);
+		} else {
+			$exportedConfigFiles = "// None.\n\t\t";
+		}
+
+		// Nette extensions
+		if(count($extensions)) {
+			$exportedExtensions =
+				"\$configurator->onCompile[] = function (\$configurator, \$complier) {";
+
+			foreach($extensions as $name => $className)
+				$exportedExtensions .= ""
+					. "\n\t\t\t"
+					. "\$complier->addExtension(" . var_export($name, TRUE) . ", new $className);";
+
+
+			$exportedExtensions .= "\n\t\t};\n\t\t";
+
+		} else {
+			$exportedExtensions = "// None.\n\t\t";
+		}
+
+		$content = <<<BOOTSTRAP_END
+<?php
+
+/**
+ * @warning This file is automatically generated by Composer.
+ * @see https://github.com/vbuilder/composer-plugin
+ */
+
+class vBuilderBootstrap$suffix {
+
+	static function init(Nette\Configurator \$configurator) {
+
+		\$vendorDir = __DIR__ . '/..';
+
+		// Container parameters
+		\$configurator->addParameters($exportedParameters);
+
+		// NEON config files
+		$exportedConfigFiles
+
+		// Nette extensions
+		$exportedExtensions
+	}
+
+}
+
+vBuilderBootstrap$suffix::init(\$configurator);
+
+
+BOOTSTRAP_END
+;
+
+		// Write
+		$this->io->write("Generating $displayPath");
+		file_put_contents($path, $content);
+	}
+
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Generates fake autoload file pointing to real autoload.php
+	 *
+	 * @param BasePackage packager
+	 * @param string target file path
+	 */
+	protected function generateFakeAutoloadFile(BasePackage $package, $targetPath) {
+
+		// Prepare paths
+		$packageInstallPath = $this->getInstallPath($package);
+		$targetDir = $this->fs->normalizePath($packageInstallPath . '/' . dirname($targetPath));
+		$targetBasename = basename($targetPath);
+
+		// Create short path to fake autoload file (for display purposes)
+		$displayFilePath = $this->fs->findShortestPath(
+			$this->getBasePath(),
+			"$targetDir/$targetBasename"
+		);
+
+		// If target directory does not exist, skip
+		if(!is_dir($targetDir)) {
+			$this->io->write('Skiping generation of fake autoload file: ' . $displayFilePath);
+			return ;
+		}
+
+		// Find relative path from directory of fake autoload file to real autoload.php
+		$relativePath = $this->fs->findShortestPath($targetDir, $this->getVendorDirPath(), TRUE);
+		$autoloadPath = var_export('/' . rtrim($relativePath, '/') . '/autoload.php', TRUE);
+
+		// Create fake autoload content
+		$content = <<<BOOTSTRAP_END
 <?php
 
 /**
@@ -188,47 +355,21 @@ return include __DIR__ . $autoloadPath;
 BOOTSTRAP_END
 ;
 
-					$autoloadFile = $bootstrapDirPath . '/' . basename($path);
-					$autoloadFileShort = $fs->findShortestPath($basePath, $autoloadFile);
-					$this->io->write('Generating fake autoload in: ' . $autoloadFileShort);
-					file_put_contents($autoloadFile, $content);
-					if(is_dir("$installPath/.git")) {
-						$exitCode = $process->execute(
-							'git --git-dir ' . escapeshellarg("$installPath/.git") .
-							' --work-tree ' . escapeshellarg($installPath) .
-							' update-index --assume-unchanged ' . escapeshellarg($autoloadFile)
-						);
+		// Write
+		$this->io->write('Generating fake autoload in: ' . $displayFilePath);
+		file_put_contents($targetPath, $content);
 
-						if($exitCode)
-							throw new \RuntimeException('Failed to mark ' . $autoloadFileShort . ' as unchanged');
-					}
-				}
-			}
+		// Mark file as unchanged for Git
+		if(is_dir("$packageInstallPath/.git")) {
+			$exitCode = $this->process->execute(
+				'git --git-dir ' . escapeshellarg("$packageInstallPath/.git") .
+				' --work-tree ' . escapeshellarg($packageInstallPath) .
+				' update-index --assume-unchanged ' . escapeshellarg($targetPath)
+			);
+
+			if($exitCode)
+				throw new \RuntimeException('Failed to mark ' . $displayFilePath . ' as unchanged');
 		}
-
-		$content = <<<PACKAGE_INFO_END
-<?php
-
-/**
- * This file is automatically merged into \$container->parameters.
- *
- * @warning This file is automatically generated by Composer.
- * @see https://github.com/vbuilder/composer-plugin
- */
-
-\$vendorDir = __DIR__ . '/..';
-
-
-PACKAGE_INFO_END
-;
-
-		ksort($info['pkg']);
-
-		$content .= 'return ' . var_export($info, TRUE) . ";\n";
-		$content = str_replace("'//VENDOR_DIR/", "\$vendorDir . '/", $content);
-
-		$this->io->write('Generating vbuilder_info.php');
-		file_put_contents($infoPath, $content);
-
 	}
+
 }

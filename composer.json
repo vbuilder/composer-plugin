@@ -5,7 +5,10 @@
 		"psr-4": {"vBuilder\\Composer\\": "src/"}
 	},
 	"extra": {
-		"class": "vBuilder\\Composer\\Plugin"
+		"class": "vBuilder\\Composer\\Plugin",
+		"branch-alias": {
+			"dev-master": "0.2.x-dev"
+		},
 	},
 	"require": {
 		"composer-plugin-api": "1.0.0"

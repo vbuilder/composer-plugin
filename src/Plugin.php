@@ -238,7 +238,7 @@ class Plugin implements PluginInterface, EventSubscriberInterface {
 		$displayPath = $this->fs->findShortestPath($this->getBasePath(), $path);
 
 		// Suffix
-		$suffix = $this->config->get('autoloader-suffix') ?: md5(uniqid('', true));
+		$suffix = md5(uniqid('', true));
 
 		// Parameters (we need to substitute absolute paths for relative)
 		$exportedParameters = var_export($parameters, TRUE);

@@ -357,7 +357,7 @@ BOOTSTRAP_END
 
 		// Write
 		$this->io->write('Generating fake autoload in: ' . $displayFilePath);
-		file_put_contents($targetPath, $content);
+		file_put_contents($targetDir . '/' . $targetBasename, $content);
 
 		// Mark file as unchanged for Git
 		if(is_dir("$packageInstallPath/.git")) {

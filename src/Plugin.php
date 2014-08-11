@@ -126,13 +126,30 @@ class Plugin implements PluginInterface, EventSubscriberInterface {
 	/**
 	 * Returns absolute path to given package
 	 *
-	 * @param Package
+	 * @param BasePackage
 	 * @return string
 	 */
 	private function getInstallPath(BasePackage $package) {
 		return ($package instanceof RootPackage)
 			? $this->getBasePath()
 			: $this->composer->getInstallationManager()->getInstallPath($package);
+	}
+
+	/**
+	 * Returns locker data for given package
+	 *
+	 * @param BasePackage
+	 * @return string
+	 */
+	private function getLockerData(BasePackage $package) {
+		$data = $this->composer->getLocker()->getLockData();
+		foreach((array) $data['packages'] as $pkgData) {
+			if($pkgData['name'] == $package->getName()) {
+				return $pkgData;
+			}
+		}
+
+		return NULL;
 	}
 
 	/**
@@ -169,6 +186,7 @@ class Plugin implements PluginInterface, EventSubscriberInterface {
 
 			$extra = $pkg->getExtra();
 			$installPath = $this->getInstallPath($pkg);
+			$lockerData = $this->getLockerData($pkg);
 
 			// -----------------------------------------------------------------
 
@@ -188,6 +206,11 @@ class Plugin implements PluginInterface, EventSubscriberInterface {
 			$bootstrapPkgInfo = array(
 				'dir' => $installPath
 			);
+
+			// Version info
+			if($lockerData !== NULL && isset($lockerData['source']['reference'])) {
+				$bootstrapPkgInfo['revision'] = $lockerData['source']['reference'];
+			}
 
 			// Do we have NEON config file?
 			$configFile = $installPath . '/config.neon';
